@@ -4,6 +4,7 @@ from pathlib import Path
 import queue, threading
 import operations
 from voice_turn import VoiceTurn
+from fast_controls import FastControls
 import numpy as np
 from faster_whisper import WhisperModel
 from local_tts import synth
@@ -67,7 +68,7 @@ def command_from_text(text, followup):
  if match: return text[match.end():].strip()
  return text.strip() if followup and text.strip() else None
 
-def capture(utterances, turns):
+def capture(utterances, turns, fast):
  vad=webrtcvad.Vad(2)
  while True:
   if not available():
@@ -90,12 +91,18 @@ def capture(utterances, turns):
       frames=list(pre);silence=0
       onset=time.monotonic()
       followup=onset<turns.followup_until
+      if fast:
+       fast.begin()
+       fast.feed(b''.join(frames),active=True)
      continue
     frames.append(frame);silence=0 if active else silence+1
+    if fast: fast.feed(frame,active)
     if silence<20 and len(frames)<600: continue
     audio=np.frombuffer(b''.join(frames),dtype=np.int16).astype(np.float32)/32768
-    try: utterances.put_nowait((audio,followup))
-    except queue.Full: log.warning('ASR queue full; utterance discarded')
+    handled=fast.finish() if fast else False
+    if not handled:
+     try: utterances.put_nowait((audio,followup))
+     except queue.Full: log.warning('ASR queue full; utterance discarded')
     frames=[];pre.clear();silence=0;voiced=0
   except Exception as e:
    turns.followup_until=0
@@ -110,7 +117,17 @@ def listen():
  if not MIC or not SINK: raise ValueError('Set VOICE_MIC and VOICE_SINK from pw-dump')
  turns=VoiceTurn(ask,synth,SINK,FOLLOWUP_SECONDS)
  utterances=queue.Queue(maxsize=2)
- threading.Thread(target=capture,args=(utterances,turns),daemon=True).start()
+ def control(action,target):
+  started=time.monotonic()
+  result=operations.dispatch(action,target)
+  if action in ('pause','stop'): turns.followup_until=0
+  log.info('Fast control action=%s target=%s status=%s dispatch_ms=%.1f',action,target,result['status'],(time.monotonic()-started)*1000)
+ fast=None
+ if os.environ.get('VOICE_FAST_CONTROLS','1') != '0':
+  model=Path(os.environ.get('VOICE_CONTROL_MODEL',str(ROOT/'vosk-model-small-ru-0.22')))
+  fast=FastControls(model,WAKE,control)
+  log.info('Streaming local controls loaded; Whisper bypass enabled')
+ threading.Thread(target=capture,args=(utterances,turns,fast),daemon=True).start()
  log.info('Continuous command listening enabled; wake word: %s',WAKE)
  while True:
   audio,followup=utterances.get()

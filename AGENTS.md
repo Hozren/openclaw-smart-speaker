@@ -40,3 +40,5 @@ The repository-owned skill is skills/speaker-music. Keep one stable cache root; 
 ## Operation dispatcher
 
 Read references/operations.md. Preserve exact-command parsing before agent routing, speech/music targeting, acknowledged IPC, no arbitrary command execution from state files, and suppression of paused/cancelled late replies. Use null-output mpv for playback tests. Do not add timers. Agent/tool cancellation and download cancellation are outside v1; document rather than imply them.
+
+Fast controls: preserve independent capture-path Vosk recognition and one-event-per-utterance suppression before Whisper. Full acoustic vocabulary is intentional: restricted grammar caused false commands in synthetic testing. Keep model downloads out of runtime; benchmark both latency and non-command false positives.
