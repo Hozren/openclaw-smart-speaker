@@ -32,3 +32,7 @@ Hardware playback, microphone tests, daemon changes and reboots are integration 
 ## Contributions
 
 Keep changes focused. Exclude generated deployment artifacts. Confirm installed CLI/schema before changing OpenClaw integrations; do not invent flags or APIs. Preserve user changes and never force-push or rewrite history without an explicit request.
+
+## Music component
+
+The repository-owned skill is skills/speaker-music. Keep one stable cache root; never invoke a shell with song text. A cache hit must not require network or yt-dlp. Index only completed media; preserve cache across upgrades. Control only this component's mpv through its private IPC socket. Validate play/stop/status and installer behavior with `python3 -m unittest discover -s tests -v`; distinguish mocked installer tests from actual GitHub release installation. Release artifacts must exclude bytecode and local caches. Preserve speaker-music.tar.gz and speaker-music.sha256 in any release marked latest, since the installer consumes that API.
