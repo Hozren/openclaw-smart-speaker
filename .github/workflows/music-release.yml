@@ -1,0 +1,21 @@
+name: Music release
+on:
+  push:
+    tags: ['music-v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests -v
+      - run: |
+          tar -czf speaker-music.tar.gz -C skills speaker-music
+          sha256sum speaker-music.tar.gz > speaker-music.sha256
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" speaker-music.tar.gz speaker-music.sha256 --title "$GITHUB_REF_NAME" --notes 'Music CLI and skill: local cache, yt-dlp, mpv. Install from latest release.' --latest

@@ -88,3 +88,26 @@ python3 -m compileall -q scripts
 ```
 
 Это проверка синтаксиса без моделей и оборудования. Интеграционные проверки описаны в SKILL.md; для разработки следуйте AGENTS.md.
+
+## Музыка через yt-dlp
+
+Отдельный [speaker-music skill](skills/speaker-music/SKILL.md) и простой CLI: разобранный агентом запрос → единый кэш → yt-dlp при промахе → mpv. Полная загрузка предшествует воспроизведению; повторный запрос играет без сети. Есть `play`, `stop`, `status`, JSON-ответы и фоновый проигрыватель.
+
+Установка для выбранного голосового агента (Python 3.12+, python3-venv):
+
+```sh
+python3 skills/speaker-music/scripts/install.py --skill-dir /path/to/agent/workspace/skills/speaker-music
+~/.local/bin/speaker-music play 'Artist - Song'
+~/.local/bin/speaker-music status
+~/.local/bin/speaker-music stop
+```
+
+Установщик всегда получает latest опубликованный release этого репозитория, а не локальную копию CLI. Проверяет SHA256 release asset, ставит актуальный yt-dlp в отдельный venv и недостающие mpv/ffmpeg через apt. На другом дистрибутиве зависимости ставятся отдельно. Для YouTube нужен поддерживаемый JS runtime: Deno или Node (при наличии Node CLI включает его явно). Ограничения YouTube/сети могут блокировать загрузку; cookies автоматически не извлекаются.
+
+Одна директория кэша: `~/.cache/openclaw-music`, переопределение `MUSIC_CACHE` должно быть одинаковым для всех вызовов. `MUSIC_AUDIO_DEVICE` — значение из `mpv --audio-device=help`; без него используется системный выход. Установка выполняется под пользователем аудио, не root. Видимость skill и allowlist голосового агента настраиваются отдельно по SKILL.md.
+
+Кэш индексируется по нормализованному запросу, медиа — по video ID. Автоочистки, очереди и ducking нет. `stop` управляет только mpv этого CLI. Фоновый плеер не гарантирует голосовое прерывание на открытых динамиках.
+
+Публикация: тег `music-vX.Y.Z` запускает workflow, тесты и выпуск `speaker-music.tar.gz` с `speaker-music.sha256`. SHA проверяет целостность, доверие основано на HTTPS и репозитории. Последующие latest releases должны сохранять эти assets для совместимости установщика.
+
+Проверки без сети и аудио: `python3 -m unittest discover -s tests -v`. Документация зависимости: https://github.com/yt-dlp/yt-dlp .
