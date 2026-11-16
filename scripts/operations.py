@@ -124,7 +124,7 @@ def parse(text, wake='Луна'):
         text = text[len(prefix):]
     verbs = {'стоп':'pause', 'пауза':'pause', 'останови':'pause', 'приостанови':'pause',
              'замолчи':'pause', 'молчи':'pause', 'хватит':'pause',
-             'продолжи':'resume', 'продолжай':'resume', 'возобнови':'resume',
+             'продолжи':'resume', 'продолжим':'resume', 'продолжай':'resume', 'возобнови':'resume',
              'отмени':'stop', 'отмена':'stop'}
     parts = text.split()
     if not parts or parts[0] not in verbs:

@@ -31,6 +31,7 @@ class OperationsTest(unittest.TestCase):
     def test_exact_grammar_not_mentions_or_tasks(self):
         self.assertEqual(ops.parse('Луна, останови музыку!'), ('pause', 'music'))
         self.assertEqual(ops.parse('Продолжи.'), ('resume', 'auto'))
+        self.assertEqual(ops.parse('Продолжим музыку.'), ('resume', 'music'))
         for text in ['скажи слово стоп', 'стоп таймер', 'стоп и включи песню', 'продолжи рассказ']:
             self.assertIsNone(ops.parse(text))
 
