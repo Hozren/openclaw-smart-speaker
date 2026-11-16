@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import argparse, collections, json, logging, os, re, signal, subprocess, tempfile, time, wave
 from pathlib import Path
+import queue, threading
+import operations
+from voice_turn import VoiceTurn
 import numpy as np
 from faster_whisper import WhisperModel
 from local_tts import synth
@@ -64,24 +67,20 @@ def command_from_text(text, followup):
  if match: return text[match.end():].strip()
  return text.strip() if followup and text.strip() else None
 
-def listen():
- if not MIC or not SINK: raise ValueError('Set VOICE_MIC and VOICE_SINK from pw-dump')
+def capture(utterances, turns):
  vad=webrtcvad.Vad(2)
- followup_until=0
  while True:
   if not available():
-   followup_until=0
-   log.info('Waiting for configured microphone and speaker');time.sleep(10);continue
+   turns.followup_until=0
+   log.info('Waiting for configured microphone and speaker');time.sleep(3);continue
   rec=None
   try:
    rec=subprocess.Popen(['pw-record','--target',MIC,'--rate','16000','--channels','1','--format','s16','-'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
    pre=collections.deque(maxlen=10);frames=[];silence=0;voiced=0
-   log.info('Listening for follow-up (no wake word)' if time.monotonic()<followup_until else f'Listening for wake word: {WAKE}')
    while True:
     frame=rec.stdout.read(960)
     if len(frame)!=960: raise RuntimeError('Microphone disconnected')
     samples=np.frombuffer(frame,dtype=np.int16).astype(np.float32)
-    # Bounded input gain for the quiet USB microphone; no stored recordings.
     frame=np.clip(samples*GAIN,-32768,32767).astype(np.int16).tobytes()
     active=vad.is_speech(frame,16000)
     if not frames:
@@ -89,38 +88,45 @@ def listen():
      voiced=voiced+1 if active else 0
      if voiced>=3:
       frames=list(pre);silence=0
-      followup=time.monotonic()<followup_until
+      onset=time.monotonic()
+      followup=onset<turns.followup_until
      continue
     frames.append(frame);silence=0 if active else silence+1
     if silence<20 and len(frames)<600: continue
-    rec.terminate();rec.wait(timeout=3);rec=None
     audio=np.frombuffer(b''.join(frames),dtype=np.int16).astype(np.float32)/32768
-    text=transcribe(audio)
-    command=command_from_text(text,followup)
-    if command is not None:
-     if re.fullmatch(r'(стоп|молчи|отмена|хватит|конец разговора)[.!? ]*',command,re.I):
-      followup_until=0
-      speak('Хорошо.')
-      log.info('Conversation closed; wake word required')
-     else:
-      if not command:
-       speak('Слушаю.')
-      else:
-       log.info('Voice command accepted; sending voice turn')
-       speak(ask(command))
-       log.info('Voice turn completed')
-      followup_until=time.monotonic()+FOLLOWUP_SECONDS
-      log.info('Follow-up window opened for %s seconds',FOLLOWUP_SECONDS)
-    else: log.info('Empty speech or speech without wake word ignored')
-    break
+    try: utterances.put_nowait((audio,followup))
+    except queue.Full: log.warning('ASR queue full; utterance discarded')
+    frames=[];pre.clear();silence=0;voiced=0
   except Exception as e:
-   followup_until=0
-   log.error('%s: %s',type(e).__name__,e);time.sleep(3)
+   turns.followup_until=0
+   log.error('Capture %s',type(e).__name__);time.sleep(1)
   finally:
    if rec is not None:
     rec.terminate()
     try:rec.wait(timeout=3)
     except subprocess.TimeoutExpired:rec.kill();rec.wait()
+
+def listen():
+ if not MIC or not SINK: raise ValueError('Set VOICE_MIC and VOICE_SINK from pw-dump')
+ turns=VoiceTurn(ask,synth,SINK,FOLLOWUP_SECONDS)
+ utterances=queue.Queue(maxsize=2)
+ threading.Thread(target=capture,args=(utterances,turns),daemon=True).start()
+ log.info('Continuous command listening enabled; wake word: %s',WAKE)
+ while True:
+  audio,followup=utterances.get()
+  try:
+   text=transcribe(audio)
+   control=operations.parse(text,WAKE)
+   if control:
+    result=operations.dispatch(*control)
+    if control[0] in ('pause','stop'): turns.followup_until=0
+    log.info('Local control action=%s target=%s status=%s',*control,result['status'])
+    continue
+   command=command_from_text(text,followup)
+   if command is not None:
+    if not turns.start(command): log.info('Busy; only local controls accepted')
+  except Exception as e:
+   log.error('Recognition/control failed: %s',type(e).__name__)
 
 if __name__=='__main__':
  p=argparse.ArgumentParser();p.add_argument('--tts',nargs=2,metavar=('TEXT','OUTPUT'));p.add_argument('--asr');p.add_argument('--self-test',action='store_true');a=p.parse_args()

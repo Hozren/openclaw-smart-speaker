@@ -101,44 +101,80 @@ def resolve(query):
     return path, title, False
 
 
+def register_operation(status):
+    """Protocol v1 snapshot, same owner/runtime as the root speaker dispatcher."""
+    directory = RUNTIME.parent / 'speaker-operations'
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise RuntimeError('Unsafe operation directory')
+    directory.chmod(0o700)
+    with (directory / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = dict(version=1, id='music', kind='music', handler='mpv-v1',
+                      state={'playing':'running', 'paused':'paused'}.get(status, 'finished'),
+                      actions=['pause','resume','stop'], updated=time.monotonic())
+        path = directory / 'music.json'
+        if path.exists():
+            previous = json.loads(path.read_text())
+            if previous.get('state') == record['state']:
+                record['updated'] = previous['updated']
+        temp = path.with_suffix('.tmp')
+        temp.write_text(json.dumps(record))
+        temp.chmod(0o600)
+        temp.replace(path)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('play').add_argument('query', help='Canonical artist - title, one argument')
     sub.add_parser('stop')
+    sub.add_parser('pause')
+    sub.add_parser('resume')
     sub.add_parser('status')
     args = parser.parse_args()
+    # Controls must never wait behind a slow download holding the cache lock.
+    if args.command in ('stop', 'pause', 'resume', 'status'):
+        try:
+            idle = ipc(['get_property', 'idle-active'])
+            if args.command == 'stop':
+                ipc(['stop'])
+                data = {'status': 'stopped'}
+            elif args.command in ('pause', 'resume') and not idle:
+                paused = args.command == 'pause'
+                ipc(['set_property', 'pause', paused])
+                if ipc(['get_property', 'pause']) != paused:
+                    raise RuntimeError('Pause state not acknowledged')
+                data = {'status': 'paused' if paused else 'playing'}
+            else:
+                data = {'status': 'idle' if idle else ('paused' if ipc(['get_property', 'pause']) else 'playing')}
+        except OSError:
+            data = {'status': 'not_running'}
+        register_operation(data['status'])
+        print(json.dumps(data))
+        return
     ROOT.mkdir(parents=True, exist_ok=True)
     with (ROOT / '.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if args.command in ('stop', 'status'):
+        if not args.query.strip() or len(args.query) > 500:
+            raise ValueError('Query must contain 1–500 characters')
+        if not shutil.which('mpv'):
+            raise RuntimeError('mpv missing; run installer')
+        path, title, cached = resolve(args.query.strip())
+        player()
+        ipc(['loadfile', str(path), 'replace'])
+        ipc(['set_property', 'pause', False])
+        for _ in range(50):
             try:
-                if args.command == 'stop':
-                    ipc(['stop'])
-                    data = {'status': 'stopped'}
-                else:
-                    idle = ipc(['get_property', 'idle-active'])
-                    data = {'status': 'idle' if idle else 'playing'}
-            except (OSError, RuntimeError):
-                data = {'status': 'not_running'}
+                if ipc(['get_property', 'path']) == str(path) and ipc(['get_property', 'time-pos']) is not None:
+                    break
+            except RuntimeError:
+                pass
+            time.sleep(.1)
         else:
-            if not args.query.strip() or len(args.query) > 500:
-                raise ValueError('Query must contain 1–500 characters')
-            if not shutil.which('mpv'):
-                raise RuntimeError('mpv missing; run installer')
-            path, title, cached = resolve(args.query.strip())
-            player()
-            ipc(['loadfile', str(path), 'replace'])
-            for _ in range(50):
-                try:
-                    if ipc(['get_property', 'path']) == str(path) and ipc(['get_property', 'time-pos']) is not None:
-                        break
-                except RuntimeError:
-                    pass
-                time.sleep(.1)
-            else:
-                raise RuntimeError(f'Playback did not start; inspect {RUNTIME / "mpv.log"}')
-            data = {'status': 'playing', 'title': title, 'cached': cached, 'file': str(path)}
+            raise RuntimeError(f'Playback did not start; inspect {RUNTIME / "mpv.log"}')
+        data = {'status': 'playing', 'title': title, 'cached': cached, 'file': str(path)}
+        register_operation(data['status'])
         print(json.dumps(data, ensure_ascii=False))
 
 

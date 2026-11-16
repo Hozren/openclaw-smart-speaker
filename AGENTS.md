@@ -9,7 +9,7 @@ Read README.md, SKILL.md, references/deployment.md and references/boot.md before
 - Target Linux/systemd/PipeWire; do not claim other platforms work without an implemented, tested backend.
 - Keep paths, audio devices, agent ID and wake word configurable. Never hardcode the author's account or hardware identifiers.
 - Discover and benchmark models available in the target account; do not pin a supposedly fastest commercial model.
-- Preserve explicit audio selection, half duplex, wake-at-start matching, rolling follow-up, stop handling and reconnect behavior.
+- Preserve explicit audio selection, continuous capture with deterministic controls, wake-at-start matching, rolling follow-up, stop handling and reconnect behavior.
 - Preview voices through temporary overrides; persist the user's choice atomically.
 - Keep model downloads out of synthesis runtime. Verify official provenance and hash before loading torch.package content.
 - Maintain one listener. Save configuration and service state before deployment changes and document rollback.
@@ -36,3 +36,7 @@ Keep changes focused. Exclude generated deployment artifacts. Confirm installed 
 ## Music component
 
 The repository-owned skill is skills/speaker-music. Keep one stable cache root; never invoke a shell with song text. A cache hit must not require network or yt-dlp. Index only completed media; preserve cache across upgrades. Control only this component's mpv through its private IPC socket. Validate play/stop/status and installer behavior with `python3 -m unittest discover -s tests -v`; distinguish mocked installer tests from actual GitHub release installation. Release artifacts must exclude bytecode and local caches. Preserve speaker-music.tar.gz and speaker-music.sha256 in any release marked latest, since the installer consumes that API.
+
+## Operation dispatcher
+
+Read references/operations.md. Preserve exact-command parsing before agent routing, speech/music targeting, acknowledged IPC, no arbitrary command execution from state files, and suppression of paused/cancelled late replies. Use null-output mpv for playback tests. Do not add timers. Agent/tool cancellation and download cancellation are outside v1; document rather than imply them.
