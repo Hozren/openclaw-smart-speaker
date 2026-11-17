@@ -2,13 +2,15 @@
 import json
 from pathlib import Path
 import operations
+from amenities import quick_parse, normalize
 
 # Address-bearing verbs wait for a target or short silence. Stop is reserved/eager.
 EAGER = {'стоп', 'пауза', 'замолчи', 'молчи', 'хватит'}
 
 
 class FastControls:
-    def __init__(self, model_path, wake, callback, recognizer=None):
+    def __init__(self, model_path, wake, callback, recognizer=None, on_wake=None):
+        self.on_wake = on_wake
         self.factory = None
         self.wake = wake
         self.callback = callback
@@ -29,6 +31,7 @@ class FastControls:
             self.rec = self.factory()
         else:
             self.rec.Reset()
+        self.woke = False
         self.fired = False
         self.candidate = None
         self.stable_seconds = 0
@@ -36,7 +39,11 @@ class FastControls:
         self.audio_seconds = 0
 
     def consider(self, text, duration, final=False):
-        command = operations.parse(text, self.wake)
+        clean = normalize(text)
+        if not self.woke and (clean == normalize(self.wake) or clean.startswith(normalize(self.wake)+' ')):
+            self.woke = True
+            if self.on_wake: self.on_wake()
+        command = operations.parse(text, self.wake) or quick_parse(text, self.wake)
         if command != self.candidate:
             self.candidate = command
             self.stable_seconds = 0
@@ -48,7 +55,8 @@ class FastControls:
         if words and words[0] == self.wake.casefold(): words = words[1:]
         eager = words and words[0] in EAGER
         # Do not act on 'останови' before hearing 'музыку'. Final result is fallback.
-        ready = command[1] != 'auto' or eager or self.silence_seconds >= .45
+        ready = (command[1] != 'auto' or eager or self.silence_seconds >= .45)
+        if command[0] in ('volume', 'volume_delta'): ready = self.silence_seconds >= .3
         if final or (ready and self.stable_seconds >= .09):
             self.fired = True  # One event per utterance, even when no active target.
             self.callback(*command)

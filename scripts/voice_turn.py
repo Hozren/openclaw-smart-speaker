@@ -11,8 +11,9 @@ log = logging.getLogger('speaker')
 
 
 class VoiceTurn:
-    def __init__(self, ask, synth, sink, followup_seconds=15):
+    def __init__(self, ask, synth, sink, followup_seconds=15, amenities=None):
         self.ask, self.synth, self.sink = ask, synth, sink
+        self.amenities = amenities
         self.followup_seconds = followup_seconds
         self.followup_until = 0
         self.thread = None
@@ -46,7 +47,9 @@ class VoiceTurn:
         proc = None
         completed = False
         try:
-            reply = self.ask(command) if command else 'Слушаю.'
+            reply = self.amenities.handle(command) if self.amenities and command else None
+            if reply is None:
+                reply = self.ask(self.amenities.context(command) if self.amenities else command) if command else 'Слушаю.'
             if not self.ready(token):
                 return
             with tempfile.TemporaryDirectory(prefix='openclaw-speech-') as directory:
@@ -57,7 +60,7 @@ class VoiceTurn:
                 # Player starts paused, eliminating the stop-vs-launch audio race.
                 ops.SPEECH_SOCKET.unlink(missing_ok=True)
                 proc = subprocess.Popen(['mpv', '--no-config', '--no-video', '--really-quiet',
-                    '--pause=yes', '--keep-open=no', '--audio-device=pipewire/'+self.sink,
+                    '--volume='+str(self.amenities.volume() if self.amenities else 60), '--pause=yes', '--keep-open=no', '--audio-device=pipewire/'+self.sink,
                     '--input-ipc-server='+str(ops.SPEECH_SOCKET), str(path)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 for _ in range(100):
@@ -65,8 +68,10 @@ class VoiceTurn:
                         raise RuntimeError('Speech player exited before ready')
                     try:
                         ops.ipc(ops.SPEECH_SOCKET, ['get_property', 'pause'])
-                        break
-                    except OSError:
+                        if ops.ipc(ops.SPEECH_SOCKET, ['get_property', 'time-pos']) is not None:
+                            break
+                        time.sleep(.05)
+                    except (OSError, RuntimeError):
                         time.sleep(.05)
                 else:
                     raise RuntimeError('Speech player startup timeout')
@@ -84,8 +89,9 @@ class VoiceTurn:
                 if proc.returncode:
                     raise RuntimeError('Speech playback failed')
                 completed = ops.speech_state(token) == 'running'
-        except Exception:
-            log.exception('Voice turn failed')
+        except Exception as error:
+            log.error('Voice turn failed: %s', type(error).__name__)
+            if self.amenities: self.amenities.cue('error')
         finally:
             if proc is not None and proc.poll() is None:
                 proc.terminate()
@@ -94,6 +100,7 @@ class VoiceTurn:
                 except subprocess.TimeoutExpired:
                     proc.kill(); proc.wait()
             ops.finish_speech(token)
+            if self.amenities: self.amenities.release()
             if completed:
                 self.followup_until = time.monotonic() + self.followup_seconds
             log.info('Voice turn finished; completed=%s', completed)

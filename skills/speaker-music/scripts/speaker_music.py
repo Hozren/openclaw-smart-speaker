@@ -38,6 +38,19 @@ def ipc(command):
     raise RuntimeError('mpv disconnected')
 
 
+
+def policy_volume():
+    try:
+        data = json.loads((RUNTIME.parent/'speaker-operations/audio-policy.json').read_text())
+        pid=int(data['owner_pid'])
+        stamp=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+        value=float(data['music_volume'])
+        if stamp==data['owner_stamp'] and 0<=time.time()-data['updated']<5 and 0<=value<=100:
+            return value
+    except (OSError, ValueError, KeyError, IndexError, TypeError): pass
+    return 60
+
+
 def player():
     try:
         ipc(['get_property', 'idle-active'])
@@ -50,7 +63,7 @@ def player():
     RUNTIME.chmod(0o700)
     SOCKET.unlink(missing_ok=True)
     cmd = ['mpv', '--no-config', '--no-video', '--idle=yes', '--no-terminal',
-           '--volume=60', f'--input-ipc-server={SOCKET}']
+           f'--volume={policy_volume()}', f'--input-ipc-server={SOCKET}']
     device = os.environ.get('MUSIC_AUDIO_DEVICE')
     if device:
         cmd.append(f'--audio-device={device}')
@@ -132,12 +145,17 @@ def main():
     sub.add_parser('pause')
     sub.add_parser('resume')
     sub.add_parser('status')
+    sub.add_parser('repeat')
     args = parser.parse_args()
     # Controls must never wait behind a slow download holding the cache lock.
-    if args.command in ('stop', 'pause', 'resume', 'status'):
+    if args.command in ('stop', 'pause', 'resume', 'status', 'repeat'):
         try:
             idle = ipc(['get_property', 'idle-active'])
-            if args.command == 'stop':
+            if args.command == 'repeat' and not idle:
+                ipc(['seek', 0, 'absolute'])
+                ipc(['set_property', 'pause', False])
+                data = {'status':'playing'}
+            elif args.command == 'stop':
                 ipc(['stop'])
                 data = {'status': 'stopped'}
             elif args.command in ('pause', 'resume') and not idle:
@@ -148,6 +166,13 @@ def main():
                 data = {'status': 'paused' if paused else 'playing'}
             else:
                 data = {'status': 'idle' if idle else ('paused' if ipc(['get_property', 'pause']) else 'playing')}
+            if not idle and args.command != 'stop':
+                try:
+                    current = ipc(['get_property', 'path'])
+                    metadata = json.loads((RUNTIME/'current.json').read_text())
+                    if metadata.get('file') == current:
+                        data.update({k:metadata[k] for k in ('title','query','artist') if k in metadata})
+                except (OSError, ValueError, RuntimeError): pass
         except OSError:
             data = {'status': 'not_running'}
         register_operation(data['status'])
@@ -162,6 +187,7 @@ def main():
             raise RuntimeError('mpv missing; run installer')
         path, title, cached = resolve(args.query.strip())
         player()
+        ipc(['set_property', 'volume', policy_volume()])
         ipc(['loadfile', str(path), 'replace'])
         ipc(['set_property', 'pause', False])
         for _ in range(50):
@@ -174,6 +200,12 @@ def main():
         else:
             raise RuntimeError(f'Playback did not start; inspect {RUNTIME / "mpv.log"}')
         data = {'status': 'playing', 'title': title, 'cached': cached, 'file': str(path)}
+        info_path=path.with_suffix('.info.json')
+        info=json.loads(info_path.read_text()) if info_path.exists() else {}
+        metadata=dict(data,query=args.query,artist=info.get('artist') or info.get('creator') or '')
+        temp=RUNTIME/'current.tmp'
+        temp.write_text(json.dumps(metadata,ensure_ascii=False)); temp.chmod(0o600)
+        temp.replace(RUNTIME/'current.json')
         register_operation(data['status'])
         print(json.dumps(data, ensure_ascii=False))
 

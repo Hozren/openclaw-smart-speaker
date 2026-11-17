@@ -5,6 +5,7 @@ import queue, threading
 import operations
 from voice_turn import VoiceTurn
 from fast_controls import FastControls
+from amenities import Amenities, quick_parse
 import numpy as np
 from faster_whisper import WhisperModel
 from local_tts import synth
@@ -115,17 +116,22 @@ def capture(utterances, turns, fast):
 
 def listen():
  if not MIC or not SINK: raise ValueError('Set VOICE_MIC and VOICE_SINK from pw-dump')
- turns=VoiceTurn(ask,synth,SINK,FOLLOWUP_SECONDS)
+ amenities=Amenities(SINK)
+ amenities.start()
+ turns=VoiceTurn(ask,synth,SINK,FOLLOWUP_SECONDS,amenities)
  utterances=queue.Queue(maxsize=2)
  def control(action,target):
   started=time.monotonic()
-  result=operations.dispatch(action,target)
-  if action in ('pause','stop'): turns.followup_until=0
+  result=amenities.quick(action,target) if action.startswith('volume') else operations.dispatch(action,target)
+  if action.startswith('volume'): amenities.release()
+  if action in ('pause','stop'):
+   turns.followup_until=0
+   amenities.release()
   log.info('Fast control action=%s target=%s status=%s dispatch_ms=%.1f',action,target,result['status'],(time.monotonic()-started)*1000)
  fast=None
  if os.environ.get('VOICE_FAST_CONTROLS','1') != '0':
   model=Path(os.environ.get('VOICE_CONTROL_MODEL',str(ROOT/'vosk-model-small-ru-0.22')))
-  fast=FastControls(model,WAKE,control)
+  fast=FastControls(model,WAKE,control,on_wake=amenities.wake)
   log.info('Streaming local controls loaded; Whisper bypass enabled')
  threading.Thread(target=capture,args=(utterances,turns,fast),daemon=True).start()
  log.info('Continuous command listening enabled; wake word: %s',WAKE)
@@ -133,16 +139,24 @@ def listen():
   audio,followup=utterances.get()
   try:
    text=transcribe(audio)
-   control=operations.parse(text,WAKE)
+   control=operations.parse(text,WAKE) or quick_parse(text,WAKE)
    if control:
-    result=operations.dispatch(*control)
-    if control[0] in ('pause','stop'): turns.followup_until=0
+    result=amenities.quick(*control) if control[0].startswith('volume') else operations.dispatch(*control)
+    if control[0].startswith('volume'): amenities.release()
+    if control[0] in ('pause','stop'):
+     turns.followup_until=0
+     amenities.release()
     log.info('Local control action=%s target=%s status=%s',*control,result['status'])
     continue
    command=command_from_text(text,followup)
    if command is not None:
-    if not turns.start(command): log.info('Busy; only local controls accepted')
+    if wake_match(text) and not fast: amenities.wake()
+    if not turns.start(command):
+     amenities.release()
+     log.info('Busy; only local controls accepted')
   except Exception as e:
+   amenities.release()
+   amenities.cue('error')
    log.error('Recognition/control failed: %s',type(e).__name__)
 
 if __name__=='__main__':

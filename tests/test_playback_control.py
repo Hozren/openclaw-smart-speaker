@@ -83,3 +83,27 @@ class PlaybackTest(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class ConveniencePlaybackTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('mpv'), 'mpv not installed')
+    def test_real_duck_and_night(self):
+        from amenities import Amenities, Store
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch.object(ops,'ROOT',root/'ops'),patch.object(ops,'MUSIC_SOCKET',root/'music.sock'),patch.object(ops,'SPEECH_SOCKET',root/'speech.sock'):
+                proc=subprocess.Popen(['mpv','--no-config','--ao=null','--idle=yes','--volume=60','--input-ipc-server='+str(ops.MUSIC_SOCKET)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                try:
+                    def ready():
+                        try: return ops.ipc(ops.MUSIC_SOCKET,['get_property','volume'])==60
+                        except OSError: return False
+                    wait_for(ready)
+                    a=Amenities(store=Store(root/'data'))
+                    with patch.object(a,'cue'):
+                        a.wake()
+                    self.assertEqual(ops.ipc(ops.MUSIC_SOCKET,['get_property','volume']),15)
+                    a.release()
+                    self.assertEqual(ops.ipc(ops.MUSIC_SOCKET,['get_property','volume']),60)
+                    a.handle('включи ночной режим')
+                    self.assertEqual(ops.ipc(ops.MUSIC_SOCKET,['get_property','volume']),30)
+                finally:
+                    proc.terminate();proc.wait(timeout=3)

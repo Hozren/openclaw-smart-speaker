@@ -49,3 +49,32 @@ class MusicTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class MusicCommandsTest(unittest.TestCase):
+    def test_repeat_and_metadata_without_network(self):
+        import contextlib,io,sys
+        with tempfile.TemporaryDirectory() as temp, patch.object(music,'RUNTIME',Path(temp)), patch.object(music,'register_operation'),patch.object(music.subprocess,'run') as download:
+            (Path(temp)/'current.json').write_text(json.dumps({'file':'/cache/song.opus','title':'Song','artist':'Artist','query':'Artist - Song'}))
+            calls=[]
+            def ipc(cmd):
+                calls.append(cmd)
+                if cmd==['get_property','idle-active']:return False
+                if cmd==['get_property','path']:return '/cache/song.opus'
+                return False
+            with patch.object(music,'ipc',side_effect=ipc),patch.object(sys,'argv',['speaker-music','repeat']),contextlib.redirect_stdout(io.StringIO()) as output:
+                music.main()
+            data=json.loads(output.getvalue())
+            self.assertEqual(data['title'],'Song')
+            self.assertIn(['seek',0,'absolute'],calls)
+            download.assert_not_called()
+
+    def test_stale_startup_policy_ignored(self):
+        import time,os
+        with tempfile.TemporaryDirectory() as temp, patch.object(music,'RUNTIME',Path(temp)/'speaker-music'):
+            path=Path(temp)/'speaker-operations';path.mkdir()
+            data={'owner_pid':os.getpid(),'owner_stamp':'wrong','updated':time.time(),'music_volume':15}
+            (path/'audio-policy.json').write_text(json.dumps(data))
+            self.assertEqual(music.policy_volume(),60)
+            data['owner_stamp']=Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')',1)[1].split()[19]
+            (path/'audio-policy.json').write_text(json.dumps(data))
+            self.assertEqual(music.policy_volume(),15)
